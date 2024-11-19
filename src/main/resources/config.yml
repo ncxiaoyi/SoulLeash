@@ -1,0 +1,3 @@
+#default value is 0(tick)
+#If you think it will lag the server, increase the value.
+Leashed-Check-Delay: 0

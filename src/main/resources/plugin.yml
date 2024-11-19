@@ -1,0 +1,21 @@
+name: SoulLeash
+version: '${project.version}'
+main: nc.SoulLeash
+api-version: 1.21.1
+authors: [ WMGameLive ]
+description: Allow to use lead on players!
+commands:
+  leashplayers:
+    description: main command.
+    usage: /<command> reload
+    permission: leashplayers.admin
+permissions:
+  leashplayers.admin:
+    description: admin permission.
+    default: op
+  leashplayers.use:
+    description: allow leash other player.
+    default: op
+  leashplayers.leashable:
+    description: allow to be leashed.
+    default: not op
