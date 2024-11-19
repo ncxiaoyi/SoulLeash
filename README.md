@@ -1,2 +1,2 @@
 # SoulLeash
-minecraft plugins
+minecraft plugins,Allow to use lead on players!
