@@ -1,14 +1,11 @@
 package nc;
 
-import org.bukkit.Bukkit;
-import org.bukkit.Location;
-import org.bukkit.Material;
+import org.bukkit.*;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
-import org.bukkit.event.player.PlayerInteractAtEntityEvent;
-import org.bukkit.event.player.PlayerJoinEvent;
-import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.event.entity.EntityDamageEvent;
+import org.bukkit.event.player.*;
 import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.util.Vector;
@@ -16,6 +13,7 @@ import org.bukkit.util.Vector;
 import java.io.File;
 import java.io.IOException;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
 import org.bukkit.configuration.file.FileConfiguration;
@@ -28,6 +26,8 @@ public class Listeners implements Listener {
     private final Map<UUID, BukkitRunnable> leashTasks = new HashMap<>();
     private final File leashDataFile = new File(main.getDataFolder(), "leash_data.yml");
     private FileConfiguration leashDataConfig;
+
+    private static final ThreadLocal<AtomicBoolean> isTeleporting = ThreadLocal.withInitial(AtomicBoolean::new);
 
     public Listeners() {
         if (!leashDataFile.exists()) {
@@ -59,15 +59,14 @@ public class Listeners implements Listener {
         if (s.getInventory().getItemInMainHand().getType() == Material.LEAD) {
             if (isAlreadyBound(mUUID)) return;
 
-            if (leashMap.containsKey(mUUID)) return;
-
-            // 绑定关系
             leashMap.putIfAbsent(sUUID, new ArrayList<>());
             leashMap.get(sUUID).add(mUUID);
             leashDataConfig.set(sUUID.toString(), leashMap.get(sUUID).stream().map(UUID::toString).collect(Collectors.toList()));
             saveLeashData();
 
             startLeashTask(s, m);
+            s.sendMessage(ChatColor.GREEN + "你拴住了 " + ChatColor.AQUA + m.getName() + ChatColor.GREEN + "，现在她是你的了！");
+
         }
 
         // 使用剑解除绑定
@@ -83,6 +82,7 @@ public class Listeners implements Listener {
                 saveLeashData();
 
                 clearLeashTask(mUUID);
+                s.sendMessage(ChatColor.RED + "你抛弃了 " + ChatColor.AQUA + m.getName() + ChatColor.RED + "，现在无家她可归了！");
             }
         }
     }
@@ -92,25 +92,90 @@ public class Listeners implements Listener {
         UUID playerUUID = e.getPlayer().getUniqueId();
 
         if (leashMap.containsKey(playerUUID)) {
-            // s 玩家退出
             List<UUID> mUUIDs = new ArrayList<>(leashMap.get(playerUUID));
             for (UUID mUUID : mUUIDs) {
-                clearLeashTask(mUUID); // 清理任务
-                Player m = Bukkit.getPlayer(mUUID);
+                clearLeashTask(mUUID);
             }
+            leashMap.remove(playerUUID);
         } else {
-            // m 玩家退出
             for (Map.Entry<UUID, List<UUID>> entry : leashMap.entrySet()) {
-                if (entry.getValue().contains(playerUUID)) {
+                if (entry.getValue().remove(playerUUID)) {
                     clearLeashTask(playerUUID);
-                    Player s = Bukkit.getPlayer(entry.getKey());
+                    if (entry.getValue().isEmpty()) leashMap.remove(entry.getKey());
                     break;
                 }
             }
         }
-
         saveLeashData();
     }
+
+    @EventHandler
+    public void onEntityDamage(EntityDamageEvent event) {
+        if (event.getEntity() instanceof Player) {
+            Player player = (Player) event.getEntity();
+            UUID playerUUID = player.getUniqueId();
+
+            if (leashMap.values().stream().anyMatch(list -> list.contains(playerUUID))) {
+                if (event.getCause() == EntityDamageEvent.DamageCause.FALL) {
+                    event.setCancelled(true);
+                }
+            }
+        }
+    }
+
+    private void startLeashTask(Player s, Player m) {
+        // 如果已存在任务，先取消
+        if (leashTasks.containsKey(m.getUniqueId())) {
+            leashTasks.get(m.getUniqueId()).cancel();
+        }
+
+        BukkitRunnable task = new BukkitRunnable() {
+            @Override
+            public void run() {
+                if (!isLeashed(s.getUniqueId(), m.getUniqueId())) {
+                    cancel();
+                    m.setAllowFlight(false); // 解除绑定时禁用飞行
+                    leashTasks.remove(m.getUniqueId());
+                    return;
+                }
+
+                if (!s.isOnline() || !m.isOnline()) {
+                    cancel();
+                    return;
+                }
+
+                Location sLoc = s.getLocation();
+                Location mLoc = m.getLocation();
+
+                if (!sLoc.getWorld().equals(mLoc.getWorld())) {
+                    m.teleport(sLoc);
+                    m.setAllowFlight(true);
+                    return;
+                }
+
+                double distance = sLoc.distance(mLoc);
+
+                // 距离大于 48 时传送
+                if (distance > 48) {
+                    m.teleport(sLoc);
+                    return;
+
+                } else if (distance > 5.5) {
+                    // 拉近逻辑
+                    Vector pull = sLoc.toVector().subtract(mLoc.toVector()).normalize().multiply(0.15);
+                    m.setVelocity(m.getVelocity().add(pull));
+                    if (distance > 7 && m.isOnGround()) {
+                        m.setVelocity(m.getVelocity().setY(0.3)); // 弹跳拉近
+                    }
+                }
+            }
+        };
+
+        m.setAllowFlight(true); // 启用飞行
+        task.runTaskTimer(main, 0, 1); // 每秒更新一次
+        leashTasks.put(m.getUniqueId(), task);
+    }
+
 
     @EventHandler
     public void onPlayerJoin(PlayerJoinEvent e) {
@@ -118,111 +183,176 @@ public class Listeners implements Listener {
         UUID playerUUID = player.getUniqueId();
 
         Bukkit.getScheduler().runTaskLater(main, () -> {
-            for (Map.Entry<UUID, List<UUID>> entry : leashMap.entrySet()) {
-                UUID sUUID = entry.getKey();
-                List<UUID> mUUIDs = entry.getValue();
-
-                if (sUUID.equals(playerUUID)) {
-                    // s 玩家重进，恢复所有绑定关系
-                    for (UUID mUUID : new ArrayList<>(mUUIDs)) {
-                        Player m = Bukkit.getPlayer(mUUID);
-                        if (m != null && m.isOnline()) {
+            // 恢复S玩家绑定
+            if (leashMap.containsKey(playerUUID)) {
+                List<UUID> mUUIDs = leashMap.get(playerUUID);
+                for (UUID mUUID : mUUIDs) {
+                    Player m = Bukkit.getPlayer(mUUID);
+                    if (m != null && m.isOnline()) {
+                        // 如果S玩家和M玩家不在同一个世界，传送M到S的位置
+                        if (!player.getWorld().equals(m.getWorld())) {
                             m.teleport(player.getLocation());
-                            startLeashTask(player, m);
                         }
+                        startLeashTask(player, m); // 启动任务
                     }
-                } else if (mUUIDs.contains(playerUUID)) {
-                    // m 玩家重进，传送到绑定者位置
+                }
+            }
+
+            // 恢复M玩家绑定
+            for (Map.Entry<UUID, List<UUID>> entry : leashMap.entrySet()) {
+                if (entry.getValue().contains(playerUUID)) {
+                    UUID sUUID = entry.getKey();
                     Player s = Bukkit.getPlayer(sUUID);
                     if (s != null && s.isOnline()) {
-                        player.teleport(s.getLocation());
-                        startLeashTask(s, player);
+                        // 如果S玩家和M玩家不在同一个世界，传送M到S的位置
+                        if (!s.getWorld().equals(player.getWorld())) {
+                            player.teleport(s.getLocation());
+                        }
+                        startLeashTask(s, player); // 启动任务
                     }
+                    break;
                 }
             }
         }, 20L);
     }
 
-    private void startLeashTask(Player s, Player m) {
-        BukkitRunnable task = new BukkitRunnable() {
-            private boolean isRecentlyTeleported = true;
+    @EventHandler
+    public void onPlayerTeleport(PlayerTeleportEvent e) {
+        Player s = e.getPlayer();
+        UUID sUUID = s.getUniqueId();
 
-            @Override
-            public void run() {
-                if (!isLeashed(s.getUniqueId(), m.getUniqueId())) {
-                    cancel();
-                    leashTasks.remove(m.getUniqueId());
-                    return;
-                }
-
-                Location sLoc = s.getLocation();
-                Location mLoc = m.getLocation();
-
-                try {
-                    double distance = sLoc.distance(mLoc);
-
-                    if (isRecentlyTeleported) {
-                        if (distance > 1) isRecentlyTeleported = false;
-                        return;
+        // 如果玩家是绑定者（S）
+        if (leashMap.containsKey(sUUID)) {
+            List<UUID> mUUIDs = leashMap.get(sUUID);
+            for (UUID mUUID : mUUIDs) {
+                Player m = Bukkit.getPlayer(mUUID);
+                if (m != null && m.isOnline()) {
+                    Location destination = e.getTo();
+                    if (destination != null && !destination.getWorld().equals(m.getWorld())) {
+                        m.teleport(destination); // 仅跨世界时传送
                     }
-
-                    if (distance > 5) {
-                        Vector pull = sLoc.toVector().subtract(mLoc.toVector()).normalize().multiply(0.3);
-                        m.setVelocity(m.getVelocity().add(pull));
-                    }
-
-                    if (distance > 6 && m.isOnGround()) {
-                        m.setVelocity(m.getVelocity().setY(0.42));
-                    }
-                } catch (IllegalArgumentException ignored) {
                 }
             }
-        };
+        }
 
-        task.runTaskTimer(main, 0, 1);
-        leashTasks.put(m.getUniqueId(), task);
-    }
+        // 如果玩家是被绑定者（M）
+        for (Map.Entry<UUID, List<UUID>> entry : leashMap.entrySet()) {
+            if (entry.getValue().contains(sUUID)) {
+                UUID sUUIDKey = entry.getKey();
+                Player sPlayer = Bukkit.getPlayer(sUUIDKey);
 
-    private void clearLeashTask(UUID playerUUID) {
-        if (leashTasks.containsKey(playerUUID)) {
-            leashTasks.get(playerUUID).cancel();
-            leashTasks.remove(playerUUID);
+                if (sPlayer != null && sPlayer.isOnline()) {
+                    Location destination = sPlayer.getLocation();
+                    if (!e.getTo().getWorld().equals(destination.getWorld())) {
+                        e.getPlayer().teleport(destination); // 仅跨世界时传送
+                    }
+                }
+                break;
+            }
         }
     }
 
-    private boolean isSword(Material material) {
-        return material.name().endsWith("_SWORD");
+
+    @EventHandler
+    public void onPlayerRespawn(PlayerRespawnEvent e) {
+        Player player = e.getPlayer();
+        UUID playerUUID = player.getUniqueId();
+
+        Bukkit.getScheduler().runTaskLater(main, () -> {
+            // 如果玩家是被绑定者（M）
+            for (Map.Entry<UUID, List<UUID>> entry : leashMap.entrySet()) {
+                if (entry.getValue().contains(playerUUID)) {
+                    UUID sUUID = entry.getKey();
+                    Player s = Bukkit.getPlayer(sUUID);
+                    if (s != null && s.isOnline()) {
+                        player.teleport(s.getLocation()); // 将 M 传送到 S
+                        startLeashTask(s, player); // 恢复绑定任务
+                    }
+                    break;
+                }
+            }
+
+            // 如果玩家是绑定者（S）
+            if (leashMap.containsKey(playerUUID)) {
+                List<UUID> mUUIDs = leashMap.get(playerUUID);
+                for (UUID mUUID : mUUIDs) {
+                    Player m = Bukkit.getPlayer(mUUID);
+                    if (m != null && m.isOnline()) {
+                        m.teleport(player.getLocation()); // 将 M 传送到 S
+                        startLeashTask(player, m); // 恢复绑定任务
+                    }
+                }
+            }
+        }, 20L); // 延迟 1 秒以确保玩家重生位置已加载
     }
 
-    private boolean isAlreadyBound(UUID mUUID) {
-        return leashMap.values().stream().anyMatch(list -> list.contains(mUUID));
+    @EventHandler
+    public void onPlayerPortal(PlayerPortalEvent e) {
+        Player player = e.getPlayer();
+        UUID playerUUID = player.getUniqueId();
+
+        // 如果是S玩家，确保M跟随
+        if (leashMap.containsKey(playerUUID)) {
+            List<UUID> mUUIDs = leashMap.get(playerUUID);
+            for (UUID mUUID : mUUIDs) {
+                Player m = Bukkit.getPlayer(mUUID);
+                if (m != null && m.isOnline()) {
+                    Bukkit.getScheduler().runTaskLater(main, () -> m.teleport(player.getLocation()), 10L);
+                }
+            }
+        }
+
+        // 如果是M玩家，确保跟随S
+        for (Map.Entry<UUID, List<UUID>> entry : leashMap.entrySet()) {
+            if (entry.getValue().contains(playerUUID)) {
+                UUID sUUID = entry.getKey();
+                Player s = Bukkit.getPlayer(sUUID);
+                if (s != null && s.isOnline()) {
+                    Bukkit.getScheduler().runTaskLater(main, () -> player.teleport(s.getLocation()), 10L);
+                }
+                break;
+            }
+        }
+    }
+
+
+    private void loadLeashData() {
+        leashMap.clear();
+        leashDataConfig.getKeys(false).forEach(key -> {
+            List<UUID> boundUUIDs = leashDataConfig.getStringList(key).stream()
+                    .map(UUID::fromString).collect(Collectors.toList());
+            leashMap.put(UUID.fromString(key), boundUUIDs);
+        });
+    }
+
+    private void saveLeashData() {
+        leashMap.forEach((uuid, mUUIDs) -> {
+            leashDataConfig.set(uuid.toString(), mUUIDs.stream().map(UUID::toString).collect(Collectors.toList()));
+        });
+        try {
+            leashDataConfig.save(leashDataFile);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
     }
 
     private boolean isLeashed(UUID sUUID, UUID mUUID) {
         return leashMap.containsKey(sUUID) && leashMap.get(sUUID).contains(mUUID);
     }
 
-    private void loadLeashData() {
-        for (String sUUIDStr : leashDataConfig.getKeys(false)) {
-            try {
-                UUID sUUID = UUID.fromString(sUUIDStr);
-                List<UUID> mUUIDs = leashDataConfig.getStringList(sUUIDStr).stream().map(UUID::fromString).collect(Collectors.toList());
-                leashMap.put(sUUID, mUUIDs);
-            } catch (IllegalArgumentException e) {
-                main.getLogger().warning("LP3在数据中发现无效的 UUID: " + sUUIDStr);
-            }
+    private boolean isAlreadyBound(UUID mUUID) {
+        return leashMap.values().stream().anyMatch(list -> list.contains(mUUID));
+    }
+
+    private void clearLeashTask(UUID mUUID) {
+        if (leashTasks.containsKey(mUUID)) {
+            leashTasks.get(mUUID).cancel();
+            leashTasks.remove(mUUID);
         }
     }
 
-    private void saveLeashData() {
-        for (UUID sUUID : leashMap.keySet()) {
-            List<String> mUUIDs = leashMap.get(sUUID).stream().map(UUID::toString).collect(Collectors.toList());
-            leashDataConfig.set(sUUID.toString(), mUUIDs);
-        }
-        try {
-            leashDataConfig.save(leashDataFile);
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
+
+    private boolean isSword(Material material) {
+        return material.name().endsWith("_SWORD");
     }
 }
