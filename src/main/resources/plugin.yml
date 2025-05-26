@@ -1,7 +1,7 @@
-name: SoulLeash
-version: '${project.version}'
+name: SouiLeash
+version: '3.0'
 main: nc.SoulLeash
-api-version: 1.21.1
+api-version: '1.21'
 authors: [ WMGameLive ]
 description: Allow to use lead on players!
 commands:
@@ -9,6 +9,10 @@ commands:
     description: main command.
     usage: /<command> reload
     permission: leashplayers.admin
+  oi:
+    description: 看向主人
+    usage: /oi
+    permission: leashplayers.use
 permissions:
   leashplayers.admin:
     description: admin permission.
@@ -19,3 +23,4 @@ permissions:
   leashplayers.leashable:
     description: allow to be leashed.
     default: not op
+
