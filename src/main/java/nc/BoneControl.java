@@ -89,7 +89,7 @@ public class BoneControl implements Listener {
 
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < msg.length(); i++) {
-            sb.append("呜");
+            sb.append("喵");
         }
 
         event.setMessage(sb.toString());
@@ -109,7 +109,7 @@ public class BoneControl implements Listener {
                 original = COLOR_PATTERN.matcher(original).replaceAll("");
                 original = PREFIX_SUFFIX_PATTERN.matcher(original).replaceAll("");
 
-                String censored = "呜".repeat(original.length());
+                String censored = "喵".repeat(original.length());
                 event.setMessage(parts[0] + " " + parts[1] + " " + censored);
             }
         }

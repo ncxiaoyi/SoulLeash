@@ -81,12 +81,15 @@ public class leash implements Listener {
                             leashMap.get(sUUID).stream().map(UUID::toString).collect(Collectors.toList())
                     );
                 }
+                Helper.removeLeash(m.getUniqueId());
+                Fence.removeFence(sUUID,mUUID);  // 从栅栏绑定缓存移除
+                leashDataConfig.set("fence_bounds." + mUUID.toString(), null);  // 配置文件中删除
                 // 保存到文件
                 instance.saveLeashData();
 
                 // 取消目标玩家身上的效果任务
                 clearLeashTask(mUUID);
-                Helper.removeLeash(m.getUniqueId());
+
                 // 提示消息
                 s.sendMessage(ChatColor.RED + "你抛弃了 " + ChatColor.AQUA + m.getName() + ChatColor.RED + "，她现在只能流浪了");
             }

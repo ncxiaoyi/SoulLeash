@@ -1,14 +1,10 @@
 package nc;
 
-import org.bukkit.Bukkit;
-import org.bukkit.ChatColor;
-import org.bukkit.Location;
-import org.bukkit.Material;
+import org.bukkit.*;
 import org.bukkit.block.Block;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.configuration.file.YamlConfiguration;
-import org.bukkit.entity.LeashHitch;
-import org.bukkit.entity.Player;
+import org.bukkit.entity.*;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
@@ -32,10 +28,10 @@ import java.util.stream.Collectors;
 import static nc.SoulLeash.*;
 
 public class Fence implements Listener {
-    private final Map<UUID, Location> fenceBoundPlayers = new HashMap<>();
+    private static final Map<UUID, Location> fenceBoundPlayers = new HashMap<>();
     public static File fenceLeashFile;
     public static FileConfiguration fenceLeashDataConfig;
-    private final SoulLeash plugin;
+    private static SoulLeash plugin = null;
 
     public Fence(SoulLeash plugin) {
         this.plugin = plugin;
@@ -46,28 +42,35 @@ public class Fence implements Listener {
     @EventHandler
     public void onPlayerRightClickFence(PlayerInteractEvent e) {
         if (e.getHand() != EquipmentSlot.HAND) return;
+        if (e.getAction() != Action.RIGHT_CLICK_BLOCK) return;
         if (e.getClickedBlock() == null || !isFence(e.getClickedBlock().getType())) return;
         if (e.getPlayer().getInventory().getItemInMainHand().getType() != Material.AIR) return;
 
+
         UUID sUUID = e.getPlayer().getUniqueId();
-        List<UUID> mUUIDs = SoulLeash.leashMap.getOrDefault(sUUID, new ArrayList<>());
+        List<UUID> mUUIDs = leashMap.getOrDefault(sUUID, new ArrayList<>());
 
         Location fenceLocation = e.getClickedBlock().getLocation().add(0.5, 1, 0.5);
 
+        if (mUUIDs.isEmpty()) return;
+
+        boolean boundAny = false;
         for (UUID mUUID : mUUIDs) {
             Player m = Bukkit.getPlayer(mUUID);
-            if (fenceBoundPlayers.containsKey(mUUID)) continue; // 如果已经固定在栅栏上，跳过
-            if (m != null && m.isOnline()) {
+            if (m != null && m.isOnline() && !fenceBoundPlayers.containsKey(mUUID)) {
                 fenceBoundPlayers.put(mUUID, fenceLocation);
-                startFenceLeashTask(sUUID, mUUID, fenceLocation); // 开始栅栏任务
-                e.getPlayer().sendMessage("§d小宠物乖乖呆在这里了=v=");
+                startFenceLeashTask(sUUID, mUUID, fenceLocation);
+                boundAny = true;
             }
+        }
+        if (boundAny) {
+            e.getPlayer().sendMessage("§d小宠物乖乖呆在这里了=v=");
         }
     }
 
     // 解除栅栏绑定并恢复跟随
     @EventHandler
-    public void onRightClickPlayer(org.bukkit.event.player.PlayerInteractEntityEvent event) {
+    public void onRightClickPlayer(PlayerInteractEntityEvent event) {
         if (!(event.getRightClicked() instanceof Player)) return;
         if (event.getHand() != EquipmentSlot.HAND) return;
 
@@ -80,19 +83,30 @@ public class Fence implements Listener {
         UUID sUUID = master.getUniqueId();
 
         // 是不是主从关系
-        if (!SoulLeash.leashMap.containsKey(sUUID)) return;
-        if (!SoulLeash.leashMap.get(sUUID).contains(mUUID)) return;
+        if (!leashMap.containsKey(sUUID)) return;
+        if (!leashMap.get(sUUID).contains(mUUID)) return;
 
         // 是否固定在栅栏上
         if (!fenceBoundPlayers.containsKey(mUUID)) return;
 
         // 解除绑定
-        if (SoulLeash.leashTasks.containsKey(mUUID)) {
-            SoulLeash.leashTasks.get(mUUID).cancel();
-            SoulLeash.leashTasks.remove(mUUID);
+        if (leashTasks.containsKey(mUUID)) {
+            leashTasks.get(mUUID).cancel();
+            leashTasks.remove(mUUID);
         }
+        // 移除栅栏上拴绳实体
+        Location fenceLoc = fenceBoundPlayers.get(mUUID);
+        removeLeashHitchAtFence(fenceLoc);
         Helper.removeLeash(mUUID);
+        target.getWorld().getNearbyEntities(target.getLocation(), 1, 1, 1).stream().filter(e -> e instanceof Bat).forEach(Entity::remove);
         Helper.attachLeash(target, master);
+        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            target.getWorld().getNearbyEntities(target.getLocation(), 2, 2, 2).stream()
+                    .filter(e -> e instanceof Item item && item.getItemStack().getType() == Material.LEAD)
+                    .forEach(Entity::remove);
+        }, 4L); // 延迟10 tick = 0.5秒
+
+
 
         fenceBoundPlayers.remove(mUUID);
         leashDataConfig.set("fence_bounds." + mUUID, null);
@@ -103,46 +117,10 @@ public class Fence implements Listener {
         master.sendMessage("§d继续带着小宠物玩=v=");
     }
 
-    @EventHandler
-    public void onPlayerInteract(PlayerInteractEvent event) {
-        Player player = event.getPlayer();
-
-        // ✅ 只有主人才允许触发绑定
-        UUID sUUID = player.getUniqueId();
-        if (!SoulLeash.leashMap.containsKey(sUUID) || SoulLeash.leashMap.get(sUUID).isEmpty()) return;
-
-        // 空手右键栅栏
-        if (event.getAction() != Action.RIGHT_CLICK_BLOCK) return;
-        if (player.getInventory().getItemInMainHand().getType() != Material.AIR) return;
-
-        Block clickedBlock = event.getClickedBlock();
-        if (clickedBlock == null || !isFence(clickedBlock.getType())) return;
-
-        // 判断是否有绑定的从者
-        if (!SoulLeash.leashMap.containsKey(sUUID)) return;
-        List<UUID> mUUIDs = SoulLeash.leashMap.get(sUUID);
-        if (mUUIDs.isEmpty()) return;
-
-        UUID mUUID = mUUIDs.get(0);
-        Player mPlayer = Bukkit.getPlayer(mUUID);
-        if (mPlayer == null || !mPlayer.isOnline()) return;
-
-        // 判断是否已经在栅栏上
-        if (fenceBoundPlayers.containsKey(mUUID)) {
-            // 解除栅栏固定，恢复跟随
-
-        } else {
-            // 绑定到栅栏
-            Location fenceLocation = clickedBlock.getLocation().add(0.5, 1, 0.5);
-            fenceBoundPlayers.put(mUUID, fenceLocation); // 记录绑定位置
-            startFenceLeashTask(sUUID, mUUID, fenceLocation); // 开始栅栏绑定任务
-        }
-    }
-
     public void startFenceLeashTask(UUID sUUID, UUID mUUID, Location fenceLocation) {
         // 先取消之前的任务
-        if (SoulLeash.leashTasks.containsKey(mUUID)) {
-            SoulLeash.leashTasks.get(mUUID).cancel();
+        if (leashTasks.containsKey(mUUID)) {
+            leashTasks.get(mUUID).cancel();
         }
 
         // 记录栅栏绑定
@@ -186,8 +164,31 @@ public class Fence implements Listener {
         };
 
         // 每 1 tick 执行一次
-        task.runTaskTimer(SoulLeash.instance, 0L, 1L);
-        SoulLeash.leashTasks.put(mUUID, task);
+        task.runTaskTimer(instance, 0L, 1L);
+        leashTasks.put(mUUID, task);
+    }
+
+    public void removeLeashHitchAtFence(Location fenceLocation) {
+        if (fenceLocation == null) return;
+
+        Location blockLoc = fenceLocation.clone().add(0, -1, 0).getBlock().getLocation();
+
+        World world = blockLoc.getWorld();
+        if (world == null) return;
+
+        double maxDistance = 0.5; // 误差范围0.5格
+
+        for (Entity entity : world.getNearbyEntities(blockLoc, 1, 1, 1)) {
+            if (entity instanceof LeashHitch) {
+                Location entityBlockLoc = entity.getLocation().getBlock().getLocation();
+
+                if (entityBlockLoc.getWorld().equals(blockLoc.getWorld())
+                        && entityBlockLoc.distance(blockLoc) <= maxDistance) {
+                    entity.remove();
+                    break;  // 找到一个就删，避免重复遍历
+                }
+            }
+        }
     }
 
 
@@ -222,7 +223,7 @@ public class Fence implements Listener {
 
 
     private UUID getOwner(UUID member) {
-        for (Map.Entry<UUID, List<UUID>> entry : SoulLeash.leashMap.entrySet()) {
+        for (Map.Entry<UUID, List<UUID>> entry : leashMap.entrySet()) {
             if (entry.getValue().contains(member)) {
                 return entry.getKey();
             }
@@ -230,9 +231,10 @@ public class Fence implements Listener {
         return null;
     }
 
-    public boolean isPlayerOnFence(Player uuid) {
-        return fenceBoundPlayers.containsKey(uuid);
+    public boolean isPlayerOnFence(Player player) {
+        return fenceBoundPlayers.containsKey(player.getUniqueId());
     }
+
 
     public static void saveFenceLeashData() {
         if (fenceLeashDataConfig == null || fenceLeashFile == null) return;
@@ -260,7 +262,7 @@ public class Fence implements Listener {
     public void loadFenceLeashData() {
         if (fenceLeashDataConfig == null) {
             // 确保初始化了配置
-            File fenceLeashFile = new File(SoulLeash.getInstance().getDataFolder(), "fence_leash_data.yml");
+            File fenceLeashFile = new File(getInstance().getDataFolder(), "fence_leash_data.yml");
             if (!fenceLeashFile.exists()) {
                 try {
                     fenceLeashFile.createNewFile();
@@ -288,6 +290,23 @@ public class Fence implements Listener {
             fenceLeashMap.put(master, followers);
         }
     }
+
+    public static void removeFence(UUID sUUID, UUID mUUID) {
+        if (leashTasks.containsKey(mUUID)) {
+            leashTasks.get(mUUID).cancel();
+            leashTasks.remove(mUUID);
+        }
+        Helper.removeLeash(mUUID);
+        fenceBoundPlayers.remove(mUUID);
+        leashDataConfig.set("fence_bounds." + mUUID, null);
+        plugin.saveLeashData();
+        Player master = Bukkit.getPlayer(sUUID);
+        Player member = Bukkit.getPlayer(mUUID);
+        if (master != null && member != null && master.isOnline() && member.isOnline()) {
+            leash.startLeashTask(master, member);
+        }
+    }
+
 
 
     // 获取所有栅栏绑定的玩家

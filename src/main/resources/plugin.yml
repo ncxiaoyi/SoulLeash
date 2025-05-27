@@ -1,5 +1,5 @@
 name: SouiLeash
-version: '3.0'
+version: '3.1'
 main: nc.SoulLeash
 api-version: '1.21'
 authors: [ WMGameLive ]

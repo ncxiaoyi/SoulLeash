@@ -76,6 +76,9 @@ public class task implements Listener {
                 List<UUID> mUUIDs = leashMap.get(playerUUID); // 获取与 S 绑定的所有 M（仆从） UUID
                 for (UUID mUUID : mUUIDs) {
                     Player m = Bukkit.getPlayer(mUUID); // 获取每个 M 的玩家对象
+                    if (SoulLeash.getFenceLeashManager().isPlayerOnFence(m)) { // 新增判断：如果仆从被绑定在栅栏，跳过传送和绑定
+                        continue;
+                    }
                     if (m != null && m.isOnline()) { // 如果 M 在线
                         // 恢复绑定任务，让 M 跟随 S
                         startLeashTask(player, m);
@@ -99,7 +102,6 @@ public class task implements Listener {
 
                 // 清除 pendingTeleport 中的记录
                 leashDataConfig.set("pendingTeleport." + playerUUID, null);
-                instance.saveLeashData(); // 保存数据
             }
             instance.saveLeashData(); // 确保数据被保存
         }, 20L); // 延迟 1 秒执行
@@ -117,6 +119,7 @@ public class task implements Listener {
 
         // 如果是仆从退出，则在主人的绑定列表中移除
         for (Map.Entry<UUID, List<UUID>> entry : leashMap.entrySet()) {
+            Helper.removeLeash(playerUUID);
             if (entry.getValue().remove(playerUUID)) {
                 UUID sUUID = entry.getKey(); // 获取主人的 UUID
                 Player s = Bukkit.getPlayer(sUUID); // 获取主人对象

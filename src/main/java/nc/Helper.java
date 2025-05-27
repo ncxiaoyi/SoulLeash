@@ -4,18 +4,21 @@ import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
-import org.bukkit.entity.Zombie;
+import org.bukkit.entity.Bat;
 import org.bukkit.event.EventPriority;
+import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityPortalEnterEvent;
 import org.bukkit.potion.PotionEffect;
 import org.bukkit.potion.PotionEffectType;
 import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.event.Listener;
 import org.bukkit.event.EventHandler;
+import org.bukkit.event.entity.EntityTargetEvent;
+import org.bukkit.event.entity.EntityUnleashEvent;
 import org.bukkit.event.player.PlayerInteractEntityEvent;
-import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scoreboard.Scoreboard;
 import org.bukkit.scoreboard.Team;
+import org.bukkit.util.Vector;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -40,22 +43,28 @@ public class Helper implements Listener {
      * @param holder 拴绳的玩家
      */
     public static void attachLeash(Player target, Player holder) {
-        Location loc = target.getLocation().clone();
-        loc.setY(loc.getY() - 0.3);  // 往下调 0.3 格
 
-        Zombie leashEntity = target.getWorld().spawn(target.getLocation(), Zombie.class, zombie -> {
-            zombie.setAdult();
-            zombie.setAI(false);
-            zombie.setInvisible(true);
-            zombie.setSilent(true);
-            zombie.setInvulnerable(true);
-            zombie.setCollidable(false);
-            zombie.setCanPickupItems(false);
-            zombie.setRemoveWhenFarAway(false);
-            zombie.setShouldBurnInDay(false);
-            zombie.getEquipment().clear();
-            zombie.addPotionEffect(new PotionEffect(PotionEffectType.SLOWNESS, Integer.MAX_VALUE, 255, false, false));
-            zombie.setLeashHolder(holder);
+        Location loc = target.getLocation().clone();
+        float yaw = loc.getYaw();
+        double yawRad = Math.toRadians(yaw);
+        double forwardX = -Math.sin(yawRad);
+        double forwardZ = Math.cos(yawRad);
+        double offsetX = -forwardX * 0.3;
+        double offsetZ = -forwardZ * 0.3;
+        double offsetY = 1;
+        loc.add(offsetX, offsetY, offsetZ);
+
+        Bat leashEntity = target.getWorld().spawn(loc, Bat.class, Bat -> {
+            Bat.setAI(false);
+            Bat.setInvisible(true);
+            Bat.setSilent(true);
+            Bat.setInvulnerable(true);
+            Bat.setCollidable(false);
+            Bat.setCanPickupItems(false);
+            Bat.setRemoveWhenFarAway(false);
+            Bat.getEquipment().clear();
+            Bat.addPotionEffect(new PotionEffect(PotionEffectType.SLOWNESS, Integer.MAX_VALUE, 255, false, false));
+            Bat.setLeashHolder(holder);
         });
         // 设置客户端也不和僵尸发生碰撞
         makeNoCollision(leashEntity);
@@ -70,18 +79,27 @@ public class Helper implements Listener {
                     cancel();
                     return;
                 }
+
                 leashEntity.setInvulnerable(true);
                 leashEntity.setFireTicks(0);
 
-                Location followLoc = target.getLocation().clone();
-                followLoc.setY(followLoc.getY() - 0.3); // 同样往下调 0.3 格
-                leashEntity.teleport(target.getLocation());
+                Location loc = target.getLocation().clone();
+                float yaw = loc.getYaw();
+                double yawRad = Math.toRadians(yaw);
+                double forwardX = -Math.sin(yawRad);
+                double forwardZ = Math.cos(yawRad);
+                double offsetX = -forwardX * 0.3;
+                double offsetZ = -forwardZ * 0.3;
+                double offsetY = 1;
+                loc.add(offsetX, offsetY, offsetZ);
+
+                leashEntity.teleport(loc);
             }
         }.runTaskTimer(plugin, 0L, 2L);
     }
 
     // 将实体加入“无碰撞”记分板队伍
-    private static void makeNoCollision(Zombie zombie) {
+    private static void makeNoCollision(Bat zombie) {
         Scoreboard scoreboard = Bukkit.getScoreboardManager().getMainScoreboard();
         Team team = scoreboard.getTeam("no_collision");
 
@@ -93,13 +111,22 @@ public class Helper implements Listener {
         team.addEntry(zombie.getUniqueId().toString());
     }
 
+    // 左键点击穿透：阻止攻击蝙蝠
+    @EventHandler
+    public void onEntityDamageByEntity(EntityDamageByEntityEvent event) {
+        if (!(event.getDamager() instanceof Player)) return;
+        if (playerToLeashEntity.containsValue(event.getEntity().getUniqueId())) {
+            event.setCancelled(true);
+        }
+    }
+
     /**
      * 监听玩家右键实体事件，阻止玩家与绑定的僵尸交互，避免点到僵尸
      */
     @EventHandler
     public void onPlayerInteractEntity(PlayerInteractEntityEvent event) {
         Entity entity = event.getRightClicked();
-        if (entity instanceof Zombie && playerToLeashEntity.containsValue(entity.getUniqueId())) {
+        if (entity instanceof Bat && playerToLeashEntity.containsValue(entity.getUniqueId())) {
             event.setCancelled(true);
         }
     }
@@ -118,14 +145,44 @@ public class Helper implements Listener {
             }
         }
     }
+
+    // 防止被目标生物锁定（例如铁傀儡、狼）
+    @EventHandler
+    public void onEntityTarget(EntityTargetEvent event) {
+        if (event.getTarget() instanceof Player && playerToLeashEntity.containsValue(event.getEntity().getUniqueId())) {
+            event.setCancelled(true);
+        }
+    }
+
     // 事件监听
     @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
     public void onEntityPortalEnter(EntityPortalEnterEvent event) {
         Entity entity = event.getEntity();
         // 判断是否是被绑定的僵尸
-        if (entity instanceof Zombie && playerToLeashEntity.containsValue(entity.getUniqueId())) {
+        if (entity instanceof Bat && playerToLeashEntity.containsValue(entity.getUniqueId())) {
             // 取消传送，阻止进入传送门
             event.setCancelled(true);
         }
     }
+    @EventHandler
+    public void onEntityUnleash(EntityUnleashEvent event) {
+        Entity entity = event.getEntity();
+        if (entity instanceof Bat && playerToLeashEntity.containsValue(entity.getUniqueId())) {
+            event.setCancelled(true);   // 取消默认的断绳行为，包括掉落拴绳物品
+            UUID toRemoveKey = null;
+            for (Map.Entry<UUID, UUID> entry : playerToLeashEntity.entrySet()) {
+                if (entry.getValue().equals(entity.getUniqueId())) {
+                    toRemoveKey = entry.getKey();
+                    break;
+                }
+            }
+            if (toRemoveKey != null) {
+                playerToLeashEntity.remove(toRemoveKey);
+            }
+            entity.remove();  // 直接删除蝙蝠实体，保证不掉落物品
+        }
+    }
+
+
+
 }

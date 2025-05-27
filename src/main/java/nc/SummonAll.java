@@ -45,7 +45,7 @@ public class SummonAll implements Listener {
             Player f = Bukkit.getPlayer(uid);
             if (f != null && f.isOnline()) {
                 f.teleport(loc);
-                Helper.attachLeash(p, f);
+//                Helper.attachLeash(f, p);
                 f.playSound(loc, Sound.ENTITY_ENDERMAN_TELEPORT, 1f, 1f);
             }
         }
